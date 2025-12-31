@@ -59,7 +59,7 @@
 - `TG_BOT_TOKEN` - Telegram Bot Token
 - `TG_CHAT_ID` - Telegram Chat ID
 - `REPO_TOKEN` - GitHub Personal Access Token
-- `CLAW_CLOUD_URL` - `默认：https://eu-central-1.run.claw.cloud` 这个地址按自己的实际地址写
+- `CLAW_CLOUD_URL` - 这个地址按自己的实际地址写`默认：https://eu-central-1.run.claw.cloud` 
 
 ### 3. 启用 Actions
 
