@@ -24,7 +24,7 @@ except ImportError:
     NACL_AVAILABLE = False
     print("⚠️ PyNaCl 未安装，无法自动更新 Secrets。pip install pynacl")
 
-DEFAULT_SERVER_URL = "https://hub.weirdhost.xyz/server/d341874c"
+DEFAULT_SERVER_URL = "https://hub.weirdhost.xyz/server/488f15ad"
 DEFAULT_COOKIE_NAME = "remember_web"
 
 
