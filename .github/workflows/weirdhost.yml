@@ -37,7 +37,7 @@ jobs:
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          python scripts/weirdhost_renew.py
+          python weirdhost_renew.py
 
       - name: 清理工作流记录
         uses: Mattraks/delete-workflow-runs@v2
