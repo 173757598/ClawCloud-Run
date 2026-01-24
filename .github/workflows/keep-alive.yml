@@ -21,9 +21,7 @@ jobs:
 
       - name: 安装依赖
         run: |
-          pip install playwright requests pynacl pysocks
-          playwright install chromium
-          playwright install-deps
+          pip install DrissionPage requests pynacl pysocks
 
       - name: 下载 Hysteria2
         run: |
