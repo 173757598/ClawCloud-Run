@@ -476,14 +476,46 @@ class AutoLogin:
         return f
 
     def click(self, page, sels, desc=""):
+        """点击元素，支持多种选择器"""
         for s in sels:
             try:
-                el = page.ele(s, timeout=3)
+                el = None
+                self.log(f"尝试选择器: {s}", "INFO")
+
+                # 首先尝试直接文本查找（DrissionPage 特性）
+                if ':has-text(' in s:
+                    # 提取文本内容
+                    import re
+                    match = re.search(r':has-text\(["\'](.+?)["\']\)', s)
+                    if match:
+                        text = match.group(1)
+                        # 尝试多种方式查找
+                        # 方法1: 直接文本查找
+                        el = page.ele(f'@text()={text}', timeout=2)
+                        if not el:
+                            # 方法2: 包含文本
+                            el = page.ele(f'@text():{text}', timeout=2)
+                        if not el:
+                            # 方法3: button标签 + 文本
+                            el = page.ele(f'button@text():{text}', timeout=2)
+                        if not el:
+                            # 方法4: a标签 + 文本
+                            el = page.ele(f'a@text():{text}', timeout=2)
+
+                # 普通CSS选择器
+                if not el:
+                    el = page.ele(s, timeout=2)
+
                 if el:
+                    self.log(f"找到元素: {s}", "SUCCESS")
                     el.click()
                     self.log(f"已点击: {desc}", "SUCCESS")
                     return True
-            except:
+                else:
+                    self.log(f"未找到元素: {s}", "WARN")
+
+            except Exception as e:
+                self.log(f"选择器 {s} 失败: {e}", "WARN")
                 pass
         return False
 
@@ -766,11 +798,31 @@ class AutoLogin:
         self.shot(page, "github_登录页")
 
         try:
-            page.ele('input[name="login"]').input(self.username)
-            page.ele('input[name="password"]').input(self.password)
+            self.log("等待登录表单加载...", "INFO")
+            time.sleep(2)  # 给页面一些渲染时间
+
+            self.log("查找用户名输入框...", "INFO")
+            username_input = page.ele(
+                '#login_field, input[name="login"]', timeout=10)
+            if username_input:
+                username_input.input(self.username)
+                self.log("已输入用户名", "SUCCESS")
+            else:
+                raise Exception("未找到用户名输入框")
+
+            self.log("查找密码输入框...", "INFO")
+            password_input = page.ele(
+                '#password, input[name="password"]', timeout=5)
+            if password_input:
+                password_input.input(self.password)
+                self.log("已输入密码", "SUCCESS")
+            else:
+                raise Exception("未找到密码输入框")
+
             self.log("已输入凭据")
         except Exception as e:
             self.log(f"输入失败: {e}", "ERROR")
+            self.shot(page, "github_输入失败")
             return False
 
         self.shot(page, "github_已填写")
