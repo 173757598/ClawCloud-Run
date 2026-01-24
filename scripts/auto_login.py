@@ -252,7 +252,8 @@ class Hysteria2Proxy:
         if not self.enabled:
             return None
 
-        return f'socks5://127.0.0.1:{LOCAL_PROXY_PORT}'
+        # DrissionPage 不支持 SOCKS5，使用 HTTP 代理
+        return f'http://127.0.0.1:{LOCAL_HTTP_PORT}'
 
 
 class Telegram:
@@ -968,7 +969,7 @@ class AutoLogin:
                     self.log(f"DrissionPage 使用代理: {proxy_config}", "INFO")
 
             # 创建页面
-            page = ChromiumPage(addr_driver_opts=options)
+            page = ChromiumPage(addr_or_opts=options)
 
             try:
                 # 预加载 Cookie
