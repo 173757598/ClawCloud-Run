@@ -1,13 +1,16 @@
-name: 韩国鸡自动续订
+name: Weirdhost 续订
 on:
   schedule:
-    - cron: '18 4 * * *'  # 每天北京时间 12:18 运行
+    - cron: '15 16 * * *'  # 每天北京时间 00:15 运行
   workflow_dispatch:      # 支持手动触发
 
 jobs:
   add_time:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -17,27 +20,34 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb x11-utils xdotool scrot
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install playwright aiohttp pynacl
-          playwright install --with-deps chromium
+          pip install seleniumbase aiohttp pynacl opencv-python-headless numpy pillow pyvirtualdisplay
 
       - name: Run weirdhost-auto
         env:
-          # Cookie 登录
-          REMEMBER_WEB_COOKIE: ${{ secrets.REMEMBER_WEB_COOKIE }}
-          REMEMBER_WEB_COOKIE_NAME: ${{ secrets.REMEMBER_WEB_COOKIE_NAME }}
-          # 目标服务器
-          SERVER_URL: ${{ secrets.SERVER_URL }}
-          # Telegram 通知
+          WEIRDHOST_COOKIE: ${{ secrets.WEIRDHOST_COOKIE }}
+          WEIRDHOST_ID: ${{ secrets.WEIRDHOST_ID }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # 自动更新 Cookie 到 Secrets
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          python weirdhost_renew.py
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python scripts/weirdhost_renew.py
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: "*.png"
+          retention-days: 3
 
       - name: 清理工作流记录
         uses: Mattraks/delete-workflow-runs@v2
