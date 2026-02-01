@@ -4,7 +4,7 @@
 weirdhost-auto - main.py
 功能：使用 Cookie 登录 → 续期 → 提取新 Cookie → 更新 GitHub Secrets
 环境变量：
-  - WEIRDHOST_COOKIE：REMEMBER_WEB_COOKIE （必须）
+  - WEIRDHOST_COOKIE：REMEMBER_WEB_COOKIE=****** （必须）
   - WEIRDHOST_ID : 服务器ID
   - TG_BOT_TOKEN, TG_CHAT_ID : Telegram 通知（可选）
   - REPO_TOKEN : 用于自动更新 GitHub Secrets（可选但推荐）
