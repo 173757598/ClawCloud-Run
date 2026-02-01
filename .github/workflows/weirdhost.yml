@@ -39,7 +39,7 @@ jobs:
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python scripts/weirdhost_renew.py
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python weirdhost_renew.py
 
       - name: Upload debug screenshots
         if: always()
