@@ -418,7 +418,7 @@ async def run_renewal(config: Config) -> None:
             # 日志中隐藏ID
             masked_id = mask_id(config.server_id)
             logger.info(f"🌐 访问: https://cp.castle-host.com/servers/pay/index/{masked_id}")
-            await page.goto(client.url, wait_until="networkidle")
+            await page.goto(client.url, wait_until="domcontentloaded")
             
             # 检查登录状态
             if "login" in page.url or "auth" in page.url:
