@@ -156,6 +156,8 @@ def analyze_api_error(error_msg: str) -> Tuple[RenewalStatus, str]:
     error_lower = error_msg.lower()
     if "24 час" in error_lower or "уже продлен" in error_lower:
         return RenewalStatus.RATE_LIMITED, "今日已续期"
+    if "валидац" in error_lower or "validation" in error_lower:
+        return RenewalStatus.FAILED, "请求校验失败"
     if "недостаточно" in error_lower:
         return RenewalStatus.FAILED, "余额不足"
     if "максимальн" in error_lower:
@@ -437,17 +439,14 @@ async def run_renewal(config: Config) -> None:
             
             # 每次都执行续期
             result = await client.renew()
-            
+
             # 验证结果
-            if result.status in [RenewalStatus.SUCCESS, RenewalStatus.OTHER]:
-                new_expiry, days_added = await client.verify_renewal(server.expiry_date or "")
-                if new_expiry and days_added > 0:
-                    result = RenewalResult(RenewalStatus.SUCCESS, "续约成功", new_expiry, days_added)
-                elif result.status == RenewalStatus.OTHER:
-                    result = RenewalResult(RenewalStatus.RATE_LIMITED, "今日已续期")
-                record.after_expiry = new_expiry or server.expiry_date or ""
-            else:
-                record.after_expiry = server.expiry_date or ""
+            new_expiry, days_added = await client.verify_renewal(server.expiry_date or "")
+            record.after_expiry = new_expiry or server.expiry_date or ""
+            if days_added > 0:
+                result = RenewalResult(RenewalStatus.SUCCESS, "续约成功", new_expiry, days_added)
+            elif result.status == RenewalStatus.OTHER:
+                result = RenewalResult(RenewalStatus.RATE_LIMITED, "今日已续期")
             
             record.status = result.status.value
             record.message = result.message
