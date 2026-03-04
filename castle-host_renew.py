@@ -112,10 +112,12 @@ def analyze_error(msg: str) -> Tuple[RenewalStatus, str]:
         return RenewalStatus.RATE_LIMITED, "今日已续期(24小时限制)"
     if "недостаточно" in m or "insufficient" in m:
         return RenewalStatus.FAILED, "余额不足"
-    if "vksub" in m.lower():
+    if "vksub" in m:
         return RenewalStatus.FAILED, "需要加入VK群组"
-    if "валидации" in m or "validation" in m:
+    if "csrf" in m or "token mismatch" in m:
         return RenewalStatus.FAILED, "CSRF验证失败"
+    if "валидации" in m or "validation" in m:
+        return RenewalStatus.FAILED, "请求参数验证失败"
     return RenewalStatus.FAILED, msg
 
 
@@ -331,33 +333,83 @@ class CastleClient:
                 await self.page.goto(f"{self.BASE}/servers/pay/index/{sid}", wait_until="networkidle")
                 await self.page.wait_for_timeout(1500)
             
-            # 使用页面内 JavaScript 发送续约请求（自动携带正确的 cookies 和 headers）
-            result = await self.page.evaluate(f"""
-                async () => {{
-                    try {{
-                        const token = document.querySelector('meta[name="csrf-token"]')?.content;
-                        if (!token) return {{ success: false, error: 'No CSRF token found' }};
-                        
-                        const response = await fetch('/servers/pay/buy_months/{sid}', {{
+            # 使用页面表单构造续约请求，优先复用站点真实字段，避免 CSRF/参数校验失败
+            result = await self.page.evaluate("""
+                async (sid) => {
+                    try {
+                        const tokenFromMeta = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+                        const tokenFromInput = document.querySelector('input[name="_token"]')?.value || '';
+                        const token = tokenFromInput || tokenFromMeta;
+
+                        const forms = Array.from(document.querySelectorAll('form'));
+                        let form = forms.find(f => (f.getAttribute('action') || '').includes('/servers/pay/buy_months/'));
+                        if (!form) {
+                            form = forms.find(f => (f.method || '').toUpperCase() === 'POST');
+                        }
+
+                        let requestUrl = `/servers/pay/buy_months/${sid}`;
+                        let body = new URLSearchParams();
+
+                        if (form) {
+                            const action = form.getAttribute('action') || form.action || '';
+                            if (action) requestUrl = action;
+
+                            const formData = new FormData(form);
+                            if (token && !formData.has('_token')) formData.set('_token', token);
+                            if (!formData.has('server_id')) formData.set('server_id', String(sid));
+
+                            body = new URLSearchParams();
+                            for (const [k, v] of formData.entries()) {
+                                body.append(k, String(v));
+                            }
+                        } else {
+                            if (token) body.set('_token', token);
+                            body.set('server_id', String(sid));
+                        }
+
+                        const response = await fetch(requestUrl, {
                             method: 'POST',
-                            headers: {{
+                            headers: {
                                 'X-CSRF-TOKEN': token,
                                 'X-Requested-With': 'XMLHttpRequest',
                                 'Accept': 'application/json, text/javascript, */*; q=0.01',
                                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
-                            }},
+                            },
+                            body,
                             credentials: 'same-origin'
-                        }});
-                        
-                        const data = await response.json();
-                        return {{ success: true, status: response.status, data: data }};
-                    }} catch (e) {{
-                        return {{ success: false, error: e.message }};
-                    }}
-                }}
-            """)
+                        });
+
+                        const contentType = response.headers.get('content-type') || '';
+                        let data = null;
+                        let text = '';
+
+                        if (contentType.includes('application/json')) {
+                            data = await response.json();
+                        } else {
+                            text = await response.text();
+                            try { data = JSON.parse(text); } catch (_) {}
+                        }
+
+                        return {
+                            success: true,
+                            status: response.status,
+                            ok: response.ok,
+                            url: response.url,
+                            content_type: contentType,
+                            data,
+                            text: text ? text.slice(0, 300) : ''
+                        };
+                    } catch (e) {
+                        return { success: false, error: e.message };
+                    }
+                }
+            """, sid)
             
             logger.info(f"🖱️ 服务器 {masked} 已请求续约")
+            if result.get('success'):
+                logger.info(f"🔍 续约响应状态: {result.get('status')} | ok={result.get('ok')} | url={result.get('url')}")
+                if result.get('content_type'):
+                    logger.info(f"🔍 续约响应类型: {result.get('content_type')}")
             
             if not result.get('success'):
                 error_msg = result.get('error', '请求失败')
@@ -366,6 +418,11 @@ class CastleClient:
                 return RenewalStatus.FAILED, error_msg, screenshot_file
             
             data = result.get('data', {})
+            if not isinstance(data, dict):
+                preview = result.get('text', '')
+                logger.error(f"❌ 非JSON响应，HTTP {result.get('status')}，预览: {preview}")
+                screenshot_file = await self.take_screenshot(sid, "nonjson")
+                return RenewalStatus.FAILED, f"HTTP {result.get('status')} 非JSON响应", screenshot_file
             
             # 刷新页面获取最新状态
             await self.page.reload(wait_until="networkidle")
