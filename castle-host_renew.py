@@ -341,18 +341,21 @@ class CastleClient:
                         const tokenFromInput = document.querySelector('input[name="_token"]')?.value || '';
                         const token = tokenFromInput || tokenFromMeta;
 
+                        const endpointPath = `/servers/pay/buy_months/${sid}`;
                         const forms = Array.from(document.querySelectorAll('form'));
-                        let form = forms.find(f => (f.getAttribute('action') || '').includes('/servers/pay/buy_months/'));
-                        if (!form) {
-                            form = forms.find(f => (f.method || '').toUpperCase() === 'POST');
-                        }
+                        const form = forms.find(f => {
+                            const action = f.getAttribute('action') || f.action || '';
+                            return action.includes('/servers/pay/buy_months/') || action.includes(endpointPath);
+                        });
 
-                        let requestUrl = `/servers/pay/buy_months/${sid}`;
+                        let requestUrl = endpointPath;
                         let body = new URLSearchParams();
 
                         if (form) {
                             const action = form.getAttribute('action') || form.action || '';
-                            if (action) requestUrl = action;
+                            if (action && (action.includes('/servers/pay/buy_months/') || action.includes(endpointPath))) {
+                                requestUrl = action;
+                            }
 
                             const formData = new FormData(form);
                             if (token && !formData.has('_token')) formData.set('_token', token);
@@ -373,7 +376,8 @@ class CastleClient:
                                 'X-CSRF-TOKEN': token,
                                 'X-Requested-With': 'XMLHttpRequest',
                                 'Accept': 'application/json, text/javascript, */*; q=0.01',
-                                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                                'Referer': window.location.href
                             },
                             body,
                             credentials: 'same-origin'
@@ -395,6 +399,8 @@ class CastleClient:
                             status: response.status,
                             ok: response.ok,
                             url: response.url,
+                            request_url: requestUrl,
+                            has_form: !!form,
                             content_type: contentType,
                             data,
                             text: text ? text.slice(0, 300) : ''
@@ -408,6 +414,7 @@ class CastleClient:
             logger.info(f"🖱️ 服务器 {masked} 已请求续约")
             if result.get('success'):
                 logger.info(f"🔍 续约响应状态: {result.get('status')} | ok={result.get('ok')} | url={result.get('url')}")
+                logger.info(f"🔍 续约请求URL: {result.get('request_url')} | 命中表单={result.get('has_form')}")
                 if result.get('content_type'):
                     logger.info(f"🔍 续约响应类型: {result.get('content_type')}")
             
