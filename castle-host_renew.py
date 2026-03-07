@@ -138,9 +138,20 @@ def _sanitize_debug_value(key: str, value: str) -> str:
     return text
 
 
+def sanitize_field_entries(entries: List[str]) -> List[str]:
+    sanitized = []
+    for entry in entries:
+        if "=" in entry:
+            key, value = entry.split("=", 1)
+            sanitized.append(f"{key}={_sanitize_debug_value(key, value)}")
+        else:
+            sanitized.append(entry)
+    return sanitized
+
+
 def build_debug_context(dom_info: Dict, result: Optional[Dict] = None) -> str:
     body_keys = dom_info.get("body_keys", []) if isinstance(dom_info, dict) else []
-    field_values = dom_info.get("field_values", []) if isinstance(dom_info, dict) else []
+    field_values = sanitize_field_entries(dom_info.get("field_values", [])) if isinstance(dom_info, dict) else []
     days_options = dom_info.get("days_options", []) if isinstance(dom_info, dict) else []
     candidate_text = ""
     candidate_attrs = ""
@@ -603,8 +614,9 @@ class CastleClient:
                 sid,
             )
 
+            safe_field_values = sanitize_field_entries(dom_info.get('field_values', []))
             logger.info(
-                f"🔍 续约策略: 表单={dom_info.get('has_form')} | 控件={dom_info.get('has_click_target')} | 字段={','.join(dom_info.get('body_keys', [])) or 'none'} | 值={';'.join(dom_info.get('field_values', [])) or 'none'} | days选项={','.join(dom_info.get('days_options', [])) or 'none'} | 候选={dom_info.get('candidate_text') or 'none'} | 候选属性={dom_info.get('candidate_attrs') or 'none'}"
+                f"🔍 续约策略: 表单={dom_info.get('has_form')} | 控件={dom_info.get('has_click_target')} | 字段={','.join(dom_info.get('body_keys', [])) or 'none'} | 值={';'.join(safe_field_values) or 'none'} | days选项={','.join(dom_info.get('days_options', [])) or 'none'} | 候选={dom_info.get('candidate_text') or 'none'} | 候选属性={dom_info.get('candidate_attrs') or 'none'}"
             )
 
             result = None
