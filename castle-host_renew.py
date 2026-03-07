@@ -529,7 +529,7 @@ class CastleClient:
 
                 if click_selector or form_selector:
                     async with self.page.expect_response(
-                        lambda response: f"/servers/pay/buy_months/{sid}" in response.url,
+                        lambda response: f"/servers/pay/index/{sid}" in response.url,
                         timeout=REQUEST_TIMEOUT * 1000,
                     ) as response_info:
                         if click_selector:
