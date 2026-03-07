@@ -382,6 +382,7 @@ class CastleClient:
         """续约服务器 - 优先触发页面真实续约控件，失败后回退到 fetch 提交"""
         masked = mask_id(sid)
         screenshot_file = ""
+        debug_context = ""
 
         try:
             current_url = self.page.url
@@ -427,6 +428,15 @@ class CastleClient:
                     const addField = (entries, key, value) => {
                         if (!key || value == null || value === '') return;
                         entries.push([String(key), String(value)]);
+                    };
+
+                    const normalizeUrl = (value) => {
+                        if (!value) return '';
+                        try {
+                            return new URL(value, window.location.origin).toString();
+                        } catch (_) {
+                            return value;
+                        }
                     };
 
                     const compactAttrText = (el) => {
