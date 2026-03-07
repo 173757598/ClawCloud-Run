@@ -125,13 +125,32 @@ def analyze_error(msg: str) -> Tuple[RenewalStatus, str]:
     return RenewalStatus.FAILED, msg
 
 
+def _sanitize_debug_value(key: str, value: str) -> str:
+    key_lower = key.lower()
+    if any(secret in key_lower for secret in ["token", "cookie", "session", "csrf"]):
+        return "<redacted>"
+
+    text = str(value).strip()
+    if not text:
+        return "<empty>"
+    if len(text) > 40:
+        return text[:37] + "..."
+    return text
+
+
 def build_debug_context(dom_info: Dict, result: Optional[Dict] = None) -> str:
     body_keys = dom_info.get("body_keys", []) if isinstance(dom_info, dict) else []
+    field_values = dom_info.get("field_values", []) if isinstance(dom_info, dict) else []
+    days_options = dom_info.get("days_options", []) if isinstance(dom_info, dict) else []
     candidate_text = ""
+    candidate_attrs = ""
     if isinstance(dom_info, dict):
         candidate_text = str(dom_info.get("candidate_text", "")).strip()
+        candidate_attrs = str(dom_info.get("candidate_attrs", "")).strip()
     if len(candidate_text) > 80:
         candidate_text = candidate_text[:77] + "..."
+    if len(candidate_attrs) > 120:
+        candidate_attrs = candidate_attrs[:117] + "..."
 
     parts = [
         f"表单={bool(dom_info.get('has_form'))}" if isinstance(dom_info, dict) else "表单=False",
@@ -139,8 +158,14 @@ def build_debug_context(dom_info: Dict, result: Optional[Dict] = None) -> str:
         f"字段={','.join(body_keys) if body_keys else 'none'}",
     ]
 
+    if field_values:
+        parts.append(f"值={';'.join(field_values)}")
+    if days_options:
+        parts.append(f"days选项={','.join(days_options)}")
     if candidate_text:
         parts.append(f"候选={candidate_text}")
+    if candidate_attrs:
+        parts.append(f"候选属性={candidate_attrs}")
 
     if isinstance(result, dict):
         request_url = str(result.get("request_url") or "")
@@ -404,14 +429,62 @@ class CastleClient:
                         entries.push([String(key), String(value)]);
                     };
 
-                    const normalizeUrl = (value) => {
-                        if (!value) return '';
-                        try {
-                            return new URL(value, window.location.origin).toString();
-                        } catch (_) {
-                            return value;
+                    const compactAttrText = (el) => {
+                        if (!el) return '';
+                        return [
+                            ['name', el.getAttribute('name')],
+                            ['value', el.getAttribute('value')],
+                            ['href', el.getAttribute('href')],
+                            ['data-url', el.getAttribute('data-url')],
+                            ['data-action', el.getAttribute('data-action')],
+                            ['onclick', el.getAttribute('onclick')],
+                        ].filter(([, value]) => value).map(([key, value]) => `${key}=${String(value).replace(/\\s+/g, ' ').trim()}`).join('; ');
+                    };
+
+                    const collectDayOptions = () => {
+                        const values = new Set();
+                        document.querySelectorAll('select[name="days"] option').forEach(option => {
+                            if (option.value) values.add(String(option.value));
+                        });
+                        document.querySelectorAll('input[name="days"]').forEach(input => {
+                            if (input.value) values.add(String(input.value));
+                        });
+                        return Array.from(values);
+                    };
+
+                    const ensureDaysValue = (entries) => {
+                        const hasDays = entries.some(([key, value]) => key === 'days' && String(value).trim());
+                        if (hasDays) return;
+
+                        const selectedOption = document.querySelector('select[name="days"] option:checked')?.value;
+                        if (selectedOption) {
+                            addField(entries, 'days', selectedOption);
+                            return;
+                        }
+
+                        const firstOption = document.querySelector('select[name="days"] option[value]')?.value;
+                        if (firstOption) {
+                            const select = document.querySelector('select[name="days"]');
+                            if (select) select.value = firstOption;
+                            addField(entries, 'days', firstOption);
+                            return;
+                        }
+
+                        const checkedRadio = document.querySelector('input[name="days"]:checked')?.value;
+                        if (checkedRadio) {
+                            addField(entries, 'days', checkedRadio);
+                            return;
+                        }
+
+                        const firstRadio = document.querySelector('input[name="days"]')?.value;
+                        if (firstRadio) {
+                            const radio = document.querySelector('input[name="days"]');
+                            if (radio) radio.checked = true;
+                            addField(entries, 'days', firstRadio);
                         }
                     };
+
+                    const summarizeEntries = (entries) => entries.map(([key, value]) => `${key}=${String(value).trim() || '<empty>'}`);
 
                     const forms = Array.from(document.querySelectorAll('form'));
                     const exactForm = forms.find(form => {
@@ -481,6 +554,8 @@ class CastleClient:
                         });
                     }
 
+                    ensureDaysValue(bodyEntries);
+
                     if (token && !bodyEntries.some(([key]) => key === '_token')) {
                         addField(bodyEntries, '_token', token);
                     }
@@ -503,6 +578,9 @@ class CastleClient:
                         request_url: requestUrl,
                         body_entries: bodyEntries,
                         body_keys: Array.from(new Set(bodyEntries.map(([key]) => key))),
+                        field_values: summarizeEntries(bodyEntries),
+                        days_options: collectDayOptions(),
+                        candidate_attrs: compactAttrText(chosen),
                         has_form: !!exactForm,
                         has_click_target: !!bestClickable,
                         form_selector: sourceForm ? mark(sourceForm, 'renew-form') : '',
@@ -516,7 +594,7 @@ class CastleClient:
             )
 
             logger.info(
-                f"🔍 续约策略: 表单={dom_info.get('has_form')} | 控件={dom_info.get('has_click_target')} | 字段={','.join(dom_info.get('body_keys', [])) or 'none'} | 候选={dom_info.get('candidate_text') or 'none'}"
+                f"🔍 续约策略: 表单={dom_info.get('has_form')} | 控件={dom_info.get('has_click_target')} | 字段={','.join(dom_info.get('body_keys', [])) or 'none'} | 值={';'.join(dom_info.get('field_values', [])) or 'none'} | days选项={','.join(dom_info.get('days_options', [])) or 'none'} | 候选={dom_info.get('candidate_text') or 'none'} | 候选属性={dom_info.get('candidate_attrs') or 'none'}"
             )
 
             result = None
@@ -529,7 +607,7 @@ class CastleClient:
 
                 if click_selector or form_selector:
                     async with self.page.expect_response(
-                        lambda response: f"/servers/pay/index/{sid}" in response.url,
+                        lambda response: f"/servers/pay/buy_months/{sid}" in response.url,
                         timeout=REQUEST_TIMEOUT * 1000,
                     ) as response_info:
                         if click_selector:
