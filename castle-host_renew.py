@@ -83,7 +83,7 @@ class Config:
             tg_chat_id=os.environ.get("TG_CHAT_ID"),
             repo_token=os.environ.get("REPO_TOKEN"),
             repository=os.environ.get("GITHUB_REPOSITORY"),
-            headless=parse_bool_env("HEADLESS", True),
+            headless=parse_bool_env("HEADLESS", False),
             debug_network=parse_bool_env("DEBUG_NETWORK", True)
         )
 
@@ -146,7 +146,7 @@ def parse_cookies(s: str) -> List[Dict]:
         p = p.strip()
         if "=" in p:
             n, v = p.split("=", 1)
-            cookies.append({"name": n.strip(), "value": v.strip(), "domain": ".castle-host.com", "path": "/"})
+            cookies.append({"name": n.strip(), "value": v.strip(), "url": "https://cp.castle-host.com"})
     return cookies
 
 
@@ -256,6 +256,13 @@ class CastleClient:
             logger.info(f"🧪 [{action_name}] Request: {req.method} {req.url}")
             if post_data:
                 logger.info(f"🧪 [{action_name}] PostData: {self._safe_snippet(post_data, 500)}")
+            key_headers = {
+                "x-csrf-token": req.headers.get("x-csrf-token", ""),
+                "x-requested-with": req.headers.get("x-requested-with", ""),
+                "referer": req.headers.get("referer", ""),
+                "user-agent": req.headers.get("user-agent", "")
+            }
+            logger.info(f"🧪 [{action_name}] Headers: {key_headers}")
             logger.info(f"🧪 [{action_name}] Response: status={response.status}, body={self._safe_snippet(body_text, 800)}")
 
         if body_text:
@@ -322,7 +329,7 @@ class CastleClient:
     async def start_server_via_api(self, sid: str) -> bool:
         """优先点击按钮启动服务器，必要时回退到JS调用"""
         masked = mask_id(sid)
-        start_url_match = lambda r: "/servers/control/action/" in r.url and "/start" in r.url
+        start_url_match = lambda r: "/servers/control/action/" in r.url
 
         try:
             if "/servers" not in self.page.url or "/control" in self.page.url or "/pay" in self.page.url:
