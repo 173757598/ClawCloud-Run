@@ -9,6 +9,7 @@ Castle-Host 服务器自动续约脚本 (带截图)
 import os
 import sys
 import re
+import json
 import logging
 import asyncio
 import aiohttp
@@ -24,6 +25,12 @@ LOG_FILE = "castle_renew.log"
 REQUEST_TIMEOUT = 30
 PAGE_TIMEOUT = 60000
 OUTPUT_DIR = Path("output/screenshots")
+
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,16 +64,27 @@ class Config:
     tg_chat_id: Optional[str]
     repo_token: Optional[str]
     repository: Optional[str]
+    headless: bool
+    debug_network: bool
 
     @classmethod
     def from_env(cls) -> "Config":
         raw = os.environ.get("CASTLE_COOKIES", "").strip()
+        cookies_list = [c.strip() for c in raw.split(",") if c.strip()] if raw else []
+
+        if not cookies_list:
+            cookies_file = os.environ.get("CASTLE_COOKIES_FILE", "").strip()
+            if cookies_file:
+                cookies_list = load_cookies_from_file(cookies_file)
+
         return cls(
-            cookies_list=[c.strip() for c in raw.split(",") if c.strip()],
+            cookies_list=cookies_list,
             tg_token=os.environ.get("TG_BOT_TOKEN"),
             tg_chat_id=os.environ.get("TG_CHAT_ID"),
             repo_token=os.environ.get("REPO_TOKEN"),
-            repository=os.environ.get("GITHUB_REPOSITORY")
+            repository=os.environ.get("GITHUB_REPOSITORY"),
+            headless=parse_bool_env("HEADLESS", True),
+            debug_network=parse_bool_env("DEBUG_NETWORK", True)
         )
 
 
@@ -74,9 +92,13 @@ def ensure_output_dir():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def sanitize_filename_part(value: str) -> str:
+    return re.sub(r'[\\/:*?"<>|]', "_", value)
+
+
 def screenshot_path(account_idx: int, server_id: str, stage: str) -> str:
     timestamp = datetime.now().strftime("%H%M%S")
-    masked = mask_id(server_id)
+    masked = sanitize_filename_part(mask_id(server_id))
     filename = f"acc{account_idx + 1}_{masked}_{stage}_{timestamp}.png"
     return str(OUTPUT_DIR / filename)
 
@@ -95,6 +117,27 @@ def days_left(s: str) -> int:
         return (datetime.strptime(s, "%d.%m.%Y") - datetime.now()).days
     except:
         return 0
+
+
+def parse_bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def load_cookies_from_file(file_path: str) -> List[str]:
+    try:
+        p = Path(file_path)
+        if not p.exists():
+            logger.warning(f"⚠️ Cookie文件不存在: {file_path}")
+            return []
+
+        lines = p.read_text(encoding="utf-8").splitlines()
+        return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+    except Exception as e:
+        logger.error(f"❌ 读取Cookie文件失败: {e}")
+        return []
 
 
 def parse_cookies(s: str) -> List[Dict]:
@@ -187,9 +230,61 @@ class GitHubManager:
 class CastleClient:
     BASE = "https://cp.castle-host.com"
 
-    def __init__(self, ctx: BrowserContext, page: Page, account_idx: int):
+    def __init__(self, ctx: BrowserContext, page: Page, account_idx: int, debug_network: bool = False):
         self.ctx, self.page = ctx, page
         self.account_idx = account_idx
+        self.debug_network = debug_network
+
+    @staticmethod
+    def _safe_snippet(text: Optional[str], limit: int = 300) -> str:
+        if not text:
+            return ""
+        t = text.replace("\n", "\\n")
+        return t[:limit] + ("..." if len(t) > limit else "")
+
+    async def _read_api_response(self, response, action_name: str) -> Dict:
+        req = response.request
+        post_data = req.post_data or ""
+        body_text = ""
+
+        try:
+            body_text = await response.text()
+        except Exception:
+            body_text = ""
+
+        if self.debug_network:
+            logger.info(f"🧪 [{action_name}] Request: {req.method} {req.url}")
+            if post_data:
+                logger.info(f"🧪 [{action_name}] PostData: {self._safe_snippet(post_data, 500)}")
+            logger.info(f"🧪 [{action_name}] Response: status={response.status}, body={self._safe_snippet(body_text, 800)}")
+
+        if body_text:
+            try:
+                parsed = json.loads(body_text)
+                if isinstance(parsed, dict):
+                    return parsed
+                return {"_raw_text": body_text, "_parsed": parsed}
+            except Exception:
+                return {"_raw_text": body_text}
+
+        try:
+            parsed = await response.json()
+            if isinstance(parsed, dict):
+                return parsed
+            return {"_parsed": parsed}
+        except Exception:
+            return {}
+
+    async def _goto_with_fallback(self, url: str):
+        try:
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        except Exception as e:
+            logger.warning(f"⚠️ 页面加载超时，尝试load回退: {url} ({e})")
+            await self.page.goto(url, wait_until="load", timeout=45000)
+        await self.page.wait_for_timeout(2000)
+
+    async def _goto_servers_page(self):
+        await self._goto_with_fallback(f"{self.BASE}/servers")
 
     async def take_screenshot(self, server_id: str, stage: str) -> str:
         try:
@@ -204,8 +299,7 @@ class CastleClient:
     async def get_server_ids(self) -> List[str]:
         """从服务器列表页获取服务器ID"""
         try:
-            await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
-            await self.page.wait_for_timeout(2000)
+            await self._goto_servers_page()
             match = re.search(r'var\s+ServersID\s*=\s*\[([\d,\s]+)\]', await self.page.content())
             if match:
                 ids = [x.strip() for x in match.group(1).split(",") if x.strip()]
@@ -226,12 +320,13 @@ class CastleClient:
             return False
 
     async def start_server_via_api(self, sid: str) -> bool:
-        """通过调用JS函数启动服务器"""
+        """优先点击按钮启动服务器，必要时回退到JS调用"""
         masked = mask_id(sid)
+        start_url_match = lambda r: "/servers/control/action/" in r.url and "/start" in r.url
+
         try:
             if "/servers" not in self.page.url or "/control" in self.page.url or "/pay" in self.page.url:
-                await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
-                await self.page.wait_for_timeout(2000)
+                await self._goto_servers_page()
 
             if not await self.check_server_stopped(sid):
                 logger.info(f"✅ 服务器 {masked} 已在运行")
@@ -239,48 +334,50 @@ class CastleClient:
 
             logger.info(f"🔴 服务器 {masked} 已关机，正在启动...")
 
-            response_data = {}
+            response_data: Dict = {}
+            start_btn = self.page.locator(f"button.icon-server-bstop[onclick*=\"sendAction({sid},'start')\"]")
 
-            async def handle_response(response):
-                if "/servers/control/action/" in response.url and "/start" in response.url:
-                    try:
-                        response_data['result'] = await response.json()
-                        logger.info(f"📡 启动API响应: {response_data['result']}")
-                    except:
-                        try:
-                            response_data['text'] = await response.text()
-                        except:
-                            pass
+            if await start_btn.count() > 0:
+                try:
+                    logger.info("🔄 点击启动按钮...")
+                    async with self.page.expect_response(start_url_match, timeout=12000) as resp_info:
+                        await start_btn.first.click()
+                    response_data = await self._read_api_response(await resp_info.value, "START")
+                except Exception as e:
+                    logger.warning(f"⚠️ 点击启动按钮未捕获到响应: {e}")
 
-            self.page.on("response", handle_response)
+            if not response_data:
+                try:
+                    logger.info("🔄 回退到 sendAction 启动...")
+                    async with self.page.expect_response(start_url_match, timeout=12000) as resp_info:
+                        await self.page.evaluate(f"sendAction({sid}, 'start')")
+                    response_data = await self._read_api_response(await resp_info.value, "START")
+                except Exception as e:
+                    logger.warning(f"⚠️ sendAction 未捕获到响应: {e}")
 
-            logger.info(f"🔄 发送启动指令...")
-            await self.page.evaluate(f"sendAction({sid}, 'start')")
+            if response_data:
+                logger.info(f"📡 启动API响应: {response_data}")
 
-            await self.page.wait_for_timeout(5000)
-
-            self.page.remove_listener("response", handle_response)
-
-            result = response_data.get('result', {})
-            if result.get('status') == 'success':
+            result = response_data
+            if result.get("status") == "success":
                 logger.info(f"🟢 服务器 {masked} 启动成功")
                 await self.page.wait_for_timeout(3000)
-                await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
-                await self.page.wait_for_timeout(2000)
+                await self._goto_servers_page()
                 return True
-            elif result.get('status') == 'error':
+
+            if result.get("status") == "error":
                 logger.warning(f"⚠️ 启动失败: {result.get('error', '未知错误')}")
                 return False
-            else:
-                text = response_data.get('text', '')
-                if 'success' in text.lower():
-                    logger.info(f"🟢 服务器 {masked} 启动指令已发送")
-                    await self.page.wait_for_timeout(3000)
-                    await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
-                    await self.page.wait_for_timeout(2000)
-                    return True
-                logger.warning(f"⚠️ 启动响应未知")
-                return False
+
+            text = str(result.get("_raw_text", ""))
+            if "success" in text.lower():
+                logger.info(f"🟢 服务器 {masked} 启动指令已发送")
+                await self.page.wait_for_timeout(3000)
+                await self._goto_servers_page()
+                return True
+
+            logger.warning("⚠️ 启动响应未知")
+            return False
 
         except Exception as e:
             logger.error(f"❌ 启动服务器 {masked} 失败: {e}")
@@ -293,13 +390,31 @@ class CastleClient:
         expiry = ""
         days = 0
 
+        async def open_pay_page():
+            await self._goto_with_fallback(f"{self.BASE}/servers/pay/index/{sid}")
+
+        async def click_and_capture(action_name: str) -> Dict:
+            renew_url_match = lambda r: "/servers/pay/buy_months/" in r.url
+            renew_btn_local = self.page.locator("#freebtn")
+            if await renew_btn_local.count() == 0:
+                return {}
+
+            try:
+                async with self.page.expect_response(renew_url_match, timeout=12000) as resp_info:
+                    logger.info(f"🖱️ 服务器 {masked} 已请求续约")
+                    await renew_btn_local.first.click()
+                return await self._read_api_response(await resp_info.value, action_name)
+            except Exception as e:
+                logger.warning(f"⚠️ 未捕获到续约API响应: {e}")
+                await self.page.wait_for_timeout(1500)
+                return {}
+
         try:
             logger.info(f"📄 访问续约页面...")
-            await self.page.goto(f"{self.BASE}/servers/pay/index/{sid}", wait_until="networkidle")
-            await self.page.wait_for_timeout(2000)
+            await open_pay_page()
 
             content = await self.page.text_content("body")
-            match = re.search(r"(\d{2}\.\d{2}\.\d{4})", content)
+            match = re.search(r"(\d{2}\.\d{2}\.\d{4})", content or "")
             if match:
                 expiry = match.group(1)
                 days = days_left(expiry)
@@ -311,25 +426,22 @@ class CastleClient:
                 screenshot_file = await self.take_screenshot(sid, "no_button")
                 return RenewalStatus.FAILED, "找不到续约按钮", screenshot_file, expiry, days
 
-            response_data = {}
+            data = await click_and_capture("RENEW")
+            if data:
+                logger.info(f"📡 续约API响应: {data}")
 
-            async def handle_response(response):
-                if "/servers/pay/buy_months/" in response.url:
-                    try:
-                        response_data['result'] = await response.json()
-                    except:
-                        pass
-
-            self.page.on("response", handle_response)
-
-            logger.info(f"🖱️ 服务器 {masked} 已请求续约")
-            await renew_btn.click()
-
-            await self.page.wait_for_timeout(3000)
-
-            self.page.remove_listener("response", handle_response)
-
-            data = response_data.get('result', {})
+            if data.get("status") == "error":
+                error_msg = data.get("error", "未知错误")
+                m = error_msg.lower()
+                if "валидации" in m or "csrf" in m:
+                    logger.warning("⚠️ 检测到CSRF/校验失败，重试一次...")
+                    await open_pay_page()
+                    retry_btn = self.page.locator('#freebtn')
+                    if await retry_btn.count() > 0:
+                        retry_data = await click_and_capture("RENEW-RETRY")
+                        if retry_data:
+                            logger.info(f"📡 续约API重试响应: {retry_data}")
+                            data = retry_data
 
             if data.get("status") == "success":
                 logger.info(f"📝 结果: ✅ 续约成功")
@@ -357,7 +469,7 @@ class CastleClient:
                     screenshot_file = await self.take_screenshot(sid, "failed")
                     return RenewalStatus.FAILED, "余额不足", screenshot_file, expiry, days
 
-                if "валидации" in m:
+                if "валидации" in m or "csrf" in m:
                     logger.info(f"📝 结果: CSRF验证失败")
                     screenshot_file = await self.take_screenshot(sid, "csrf_failed")
                     return RenewalStatus.FAILED, "CSRF验证失败", screenshot_file, expiry, days
@@ -366,9 +478,10 @@ class CastleClient:
                 screenshot_file = await self.take_screenshot(sid, "failed")
                 return RenewalStatus.FAILED, error_msg, screenshot_file, expiry, days
 
+            raw = str(data.get("_raw_text", "")) if isinstance(data, dict) else ""
             logger.info(f"📝 结果: 未知响应")
             screenshot_file = await self.take_screenshot(sid, "unknown")
-            return RenewalStatus.FAILED, str(data) if data else "无响应", screenshot_file, expiry, days
+            return RenewalStatus.FAILED, raw if raw else (str(data) if data else "无响应"), screenshot_file, expiry, days
 
         except Exception as e:
             logger.error(f"❌ 续约服务器 {masked} 异常: {e}")
@@ -383,7 +496,13 @@ class CastleClient:
             return None
 
 
-async def process_account(cookie_str: str, idx: int, notifier: Notifier) -> Tuple[Optional[str], List[ServerResult]]:
+async def process_account(
+    cookie_str: str,
+    idx: int,
+    notifier: Notifier,
+    headless: bool = True,
+    debug_network: bool = False
+) -> Tuple[Optional[str], List[ServerResult]]:
     cookies = parse_cookies(cookie_str)
     if not cookies:
         logger.error(f"❌ 账号#{idx + 1} Cookie解析失败")
@@ -393,7 +512,7 @@ async def process_account(cookie_str: str, idx: int, notifier: Notifier) -> Tupl
     logger.info(f"📌 处理账号 #{idx + 1}")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        browser = await p.chromium.launch(headless=headless, args=["--no-sandbox"])
         ctx = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080}
@@ -401,7 +520,7 @@ async def process_account(cookie_str: str, idx: int, notifier: Notifier) -> Tupl
         await ctx.add_cookies(cookies)
         page = await ctx.new_page()
         page.set_default_timeout(PAGE_TIMEOUT)
-        client = CastleClient(ctx, page, idx)
+        client = CastleClient(ctx, page, idx, debug_network=debug_network)
         results: List[ServerResult] = []
 
         try:
@@ -428,8 +547,7 @@ async def process_account(cookie_str: str, idx: int, notifier: Notifier) -> Tupl
                 results.append(ServerResult(sid, status, msg, expiry, days, started, screenshot))
 
                 if len(server_ids) > 1 and sid != server_ids[-1]:
-                    await page.goto(f"{client.BASE}/servers", wait_until="networkidle")
-                    await page.wait_for_timeout(2000)
+                    await client._goto_servers_page()
 
             for r in results:
                 if r.status == RenewalStatus.SUCCESS:
@@ -482,10 +600,11 @@ async def main():
     config = Config.from_env()
 
     if not config.cookies_list:
-        logger.error("❌ 未设置 CASTLE_COOKIES")
+        logger.error("❌ 未设置 CASTLE_COOKIES，且 CASTLE_COOKIES_FILE 无有效内容")
         return
 
     logger.info(f"📊 共 {len(config.cookies_list)} 个账号")
+    logger.info(f"🧭 运行模式: HEADLESS={config.headless}, DEBUG_NETWORK={config.debug_network}")
 
     notifier = Notifier(config.tg_token, config.tg_chat_id)
     github = GitHubManager(config.repo_token, config.repository)
@@ -493,7 +612,13 @@ async def main():
     new_cookies, changed = [], False
 
     for i, cookie in enumerate(config.cookies_list):
-        new, _ = await process_account(cookie, i, notifier)
+        new, _ = await process_account(
+            cookie,
+            i,
+            notifier,
+            headless=config.headless,
+            debug_network=config.debug_network
+        )
         if new:
             new_cookies.append(new)
             if new != cookie:
