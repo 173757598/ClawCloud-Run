@@ -84,7 +84,7 @@ class Config:
             repo_token=os.environ.get("REPO_TOKEN"),
             repository=os.environ.get("GITHUB_REPOSITORY"),
             headless=parse_bool_env("HEADLESS", True),
-            debug_network=parse_bool_env("DEBUG_NETWORK", True)
+            debug_network=parse_bool_env("DEBUG_NETWORK", False)
         )
 
 
